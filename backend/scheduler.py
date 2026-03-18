@@ -1,7 +1,7 @@
 import os
 import json
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from database import SessionLocal, Show, Episode, UserPreference, DigestJob
@@ -24,7 +24,7 @@ async def poll_rss_feeds():
                     if not db.query(Episode).filter_by(guid=ep["guid"]).first():
                         db.add(Episode(show_id=show.id, **ep))
                         new_count += 1
-                show.last_checked = datetime.utcnow()
+                show.last_checked = datetime.now(timezone.utc)
                 db.commit()
             except Exception as e:
                 print(f"[scheduler] Failed to poll {show.rss_url}: {e}")
@@ -100,6 +100,8 @@ def start_scheduler():
         pref = db.query(UserPreference).filter_by(id=1).first()
         if pref:
             setup_scheduler(pref)
+        else:
+            print("[scheduler] Warning: no UserPreference found — scheduler will start with no jobs")
     finally:
         db.close()
 
