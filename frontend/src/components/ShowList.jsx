@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import AddShowModal from './AddShowModal'
-import { deleteShow } from '../api'
+import { deleteShow, getShows } from '../api'
 
 export default function ShowList({ shows, onShowsChange }) {
   const [showModal, setShowModal] = useState(false)
@@ -11,7 +11,12 @@ export default function ShowList({ shows, onShowsChange }) {
   }
 
   const handleAdded = (newShows) => {
-    onShowsChange([...shows, ...newShows])
+    if (newShows === null) {
+      // OPML import: refresh full list
+      getShows().then(onShowsChange)
+    } else {
+      onShowsChange([...shows, ...newShows])
+    }
     setShowModal(false)
   }
 

@@ -10,6 +10,7 @@ export default function JobProgress({ jobId, onDone }) {
       setEvents(prev => [...prev, event])
       if (event.pct >= 0) setPct(event.pct)
       if (event.step === 'done') onDone(event.digest_id)
+      if (event.step === 'failed') onDone(null)
     })
     return () => es.close()
   }, [jobId])

@@ -55,8 +55,8 @@ export default function AddShowModal({ onClose, onAdded }) {
     setError(null)
     try {
       await importOpml(file)
-      // Refresh full show list by reloading — parent handles via onAdded with empty array trigger
-      onAdded([])
+      // Signal for full show list refresh
+      onAdded(null)
       onClose()
     } catch (e) {
       setError('Import failed')
