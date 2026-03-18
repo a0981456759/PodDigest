@@ -1,0 +1,261 @@
+import os
+import json
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from dotenv import load_dotenv
+
+from database import get_db, init_db, Show, Episode, DigestJob, Digest, UserPreference
+from rss import parse_feed, search_itunes, parse_opml
+
+load_dotenv()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+app = FastAPI(title="Podcast Digest", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ── Shows ─────────────────────────────────────────────────────────────────────
+
+class AddShowRequest(BaseModel):
+    rss_url: str
+
+class SearchRequest(BaseModel):
+    query: str
+
+@app.post("/shows/search")
+def search_shows(req: SearchRequest):
+    return search_itunes(req.query)
+
+@app.post("/shows", status_code=201)
+def add_show(req: AddShowRequest, db: Session = Depends(get_db)):
+    if db.query(Show).filter_by(rss_url=req.rss_url).first():
+        raise HTTPException(status_code=409, detail="Show already subscribed")
+    try:
+        show_data, episodes = parse_feed(req.rss_url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    show = Show(rss_url=req.rss_url, **show_data)
+    db.add(show)
+    db.flush()
+    for ep in episodes:
+        if db.query(Episode).filter_by(guid=ep["guid"]).first():
+            continue
+        db.add(Episode(show_id=show.id, **ep))
+    db.commit()
+    db.refresh(show)
+    return _show_to_dict(show)
+
+@app.post("/shows/import-opml", status_code=200)
+async def import_opml(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    content = await file.read()
+    urls = parse_opml(content)
+    results = {"imported": [], "failed": [], "skipped": []}
+    for url in urls:
+        if db.query(Show).filter_by(rss_url=url).first():
+            results["skipped"].append(url)
+            continue
+        try:
+            show_data, episodes = parse_feed(url)
+            show = Show(rss_url=url, **show_data)
+            db.add(show)
+            db.flush()
+            for ep in episodes:
+                if not db.query(Episode).filter_by(guid=ep["guid"]).first():
+                    db.add(Episode(show_id=show.id, **ep))
+            db.commit()
+            results["imported"].append(url)
+        except Exception as e:
+            db.rollback()
+            results["failed"].append({"url": url, "error": str(e)})
+    return results
+
+@app.get("/shows")
+def list_shows(db: Session = Depends(get_db)):
+    return [_show_to_dict(s) for s in db.query(Show).all()]
+
+@app.delete("/shows/{show_id}", status_code=204)
+def delete_show(show_id: int, db: Session = Depends(get_db)):
+    show = db.query(Show).filter_by(id=show_id).first()
+    if not show:
+        raise HTTPException(status_code=404, detail="Show not found")
+    db.delete(show)
+    db.commit()
+
+@app.get("/shows/{show_id}/episodes")
+def list_episodes(show_id: int, db: Session = Depends(get_db)):
+    show = db.query(Show).filter_by(id=show_id).first()
+    if not show:
+        raise HTTPException(status_code=404, detail="Show not found")
+    return [_episode_to_dict(e) for e in show.episodes]
+
+
+# ── Preferences ───────────────────────────────────────────────────────────────
+
+class PreferenceUpdate(BaseModel):
+    topic_tags: list[str] | None = None
+    interest_description: str | None = None
+    output_language: str | None = None
+    schedule_type: str | None = None
+    schedule_day: int | None = None
+    schedule_hour: int | None = None
+
+@app.get("/preferences")
+def get_preferences(db: Session = Depends(get_db)):
+    pref = db.query(UserPreference).filter_by(id=1).first()
+    if not pref:
+        raise HTTPException(status_code=404, detail="Preferences not found")
+    return _pref_to_dict(pref)
+
+@app.put("/preferences")
+def update_preferences(req: PreferenceUpdate, db: Session = Depends(get_db)):
+    pref = db.query(UserPreference).filter_by(id=1).first()
+    if not pref:
+        raise HTTPException(status_code=404, detail="Preferences not found")
+    if req.topic_tags is not None:
+        pref.topic_tags = json.dumps(req.topic_tags)
+    if req.interest_description is not None:
+        pref.interest_description = req.interest_description
+    if req.output_language is not None:
+        pref.output_language = req.output_language
+    if req.schedule_type is not None:
+        pref.schedule_type = req.schedule_type
+    if req.schedule_day is not None:
+        pref.schedule_day = req.schedule_day
+    if req.schedule_hour is not None:
+        pref.schedule_hour = req.schedule_hour
+    db.commit()
+    db.refresh(pref)
+    return _pref_to_dict(pref)
+
+
+# ── Digests (stubs) ───────────────────────────────────────────────────────────
+
+@app.get("/digests")
+def list_digests(db: Session = Depends(get_db)):
+    return [_digest_to_dict(d) for d in db.query(Digest).order_by(Digest.published_at.desc()).all()]
+
+@app.get("/digests/{digest_id}")
+def get_digest(digest_id: int, db: Session = Depends(get_db)):
+    d = db.query(Digest).filter_by(id=digest_id).first()
+    if not d:
+        raise HTTPException(status_code=404, detail="Digest not found")
+    return _digest_to_dict(d)
+
+@app.get("/digests/{digest_id}/audio")
+def get_digest_audio(digest_id: int, db: Session = Depends(get_db)):
+    d = db.query(Digest).filter_by(id=digest_id).first()
+    if not d or not d.audio_path:
+        raise HTTPException(status_code=404, detail="Audio not found")
+    audio_storage = os.getenv("AUDIO_STORAGE_PATH", "./digests")
+    path = os.path.join(audio_storage, d.audio_path)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Audio file missing")
+    return FileResponse(path, media_type="audio/mpeg")
+
+
+# ── Digest jobs (stubs — filled in Task 9) ───────────────────────────────────
+
+@app.post("/digest/trigger", status_code=202)
+def trigger_digest(db: Session = Depends(get_db)):
+    return {"job_id": None}  # stub — full implementation in Task 9
+
+@app.get("/digest/jobs")
+def list_jobs(db: Session = Depends(get_db)):
+    return [_job_to_dict(j) for j in db.query(DigestJob).order_by(DigestJob.created_at.desc()).all()]
+
+@app.get("/digest/jobs/{job_id}")
+def get_job(job_id: int, db: Session = Depends(get_db)):
+    j = db.query(DigestJob).filter_by(id=job_id).first()
+    if not j:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return _job_to_dict(j)
+
+
+# ── SSE stream (stub — filled in Task 9) ─────────────────────────────────────
+
+@app.get("/digest/jobs/{job_id}/stream")
+async def stream_job_stub(job_id: int):
+    from fastapi.responses import StreamingResponse
+    async def empty():
+        yield ": stub\n\n"
+    return StreamingResponse(empty(), media_type="text/event-stream")
+
+
+# ── Private RSS feed (calls feed.py — implemented in Task 8) ─────────────────
+
+@app.get("/feed/{token}")
+def get_feed(token: str, db: Session = Depends(get_db)):
+    from feed import generate_feed_xml
+    from fastapi.responses import Response
+    pref = db.query(UserPreference).filter_by(id=1).first()
+    if not pref or pref.feed_token != token:
+        raise HTTPException(status_code=404, detail="Feed not found")
+    digests = db.query(Digest).order_by(Digest.published_at.desc()).all()
+    xml_content = generate_feed_xml(digests, os.getenv("BASE_URL", "http://localhost:8000"))
+    return Response(content=xml_content, media_type="application/rss+xml")
+
+
+# ── Serializers ───────────────────────────────────────────────────────────────
+
+def _show_to_dict(show: Show) -> dict:
+    return {
+        "id": show.id, "title": show.title, "author": show.author,
+        "description": show.description, "rss_url": show.rss_url,
+        "artwork_url": show.artwork_url,
+        "last_checked": show.last_checked.isoformat() if show.last_checked else None,
+        "created_at": show.created_at.isoformat() if show.created_at else None,
+    }
+
+def _episode_to_dict(ep: Episode) -> dict:
+    return {
+        "id": ep.id, "show_id": ep.show_id, "guid": ep.guid,
+        "title": ep.title, "description": ep.description,
+        "pub_date": ep.pub_date.isoformat() if ep.pub_date else None,
+        "duration_sec": ep.duration_sec, "audio_url": ep.audio_url,
+        "has_transcript": ep.transcript is not None,
+        "has_summary": ep.summary is not None,
+        "transcript_failed": ep.transcript_failed,
+        "processed_at": ep.processed_at.isoformat() if ep.processed_at else None,
+    }
+
+def _pref_to_dict(pref: UserPreference) -> dict:
+    return {
+        "topic_tags": json.loads(pref.topic_tags or "[]"),
+        "interest_description": pref.interest_description,
+        "output_language": pref.output_language,
+        "schedule_type": pref.schedule_type,
+        "schedule_day": pref.schedule_day,
+        "schedule_hour": pref.schedule_hour,
+        "feed_token": pref.feed_token,
+    }
+
+def _job_to_dict(job: DigestJob) -> dict:
+    return {
+        "id": job.id, "status": job.status, "triggered_by": job.triggered_by,
+        "episode_ids": json.loads(job.episode_ids or "[]"),
+        "progress_pct": job.progress_pct, "current_step": job.current_step,
+        "error_message": job.error_message,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+    }
+
+def _digest_to_dict(d: Digest) -> dict:
+    return {
+        "id": d.id, "job_id": d.job_id, "title": d.title,
+        "script": d.script, "audio_path": d.audio_path,
+        "duration_sec": d.duration_sec,
+        "episode_ids": json.loads(d.episode_ids or "[]"),
+        "published_at": d.published_at.isoformat() if d.published_at else None,
+    }
