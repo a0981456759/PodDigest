@@ -1,15 +1,17 @@
 import os
 import json
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
 
-from database import get_db, init_db, Show, Episode, DigestJob, Digest, UserPreference
+from database import get_db, init_db, SessionLocal, Show, Episode, DigestJob, Digest, UserPreference
 from rss import parse_feed, search_itunes, parse_opml
+from pipeline import run_pipeline, subscribe_to_job, unsubscribe_from_job
 
 load_dotenv()
 
@@ -169,8 +171,33 @@ def get_digest_audio(digest_id: int, db: Session = Depends(get_db)):
 # ── Digest jobs (stubs — filled in Task 9) ───────────────────────────────────
 
 @app.post("/digest/trigger", status_code=202)
-def trigger_digest(db: Session = Depends(get_db)):
-    return {"job_id": None}  # stub — full implementation in Task 9
+async def trigger_digest(db: Session = Depends(get_db)):
+    pref = db.query(UserPreference).filter_by(id=1).first()
+    # Collect all episodes that still need processing (no transcript OR no summary),
+    # excluding any that have permanently failed transcription.
+    # Note: episodes that already have both transcript AND summary are excluded by
+    # design — they were processed in prior digests. The pipeline will regenerate
+    # a new digest script from cached summaries for any re-trigger.
+    unprocessed = db.query(Episode).filter(
+        Episode.transcript_failed == False,
+        (Episode.transcript == None) | (Episode.summary == None),
+    ).all()
+    if not unprocessed:
+        raise HTTPException(status_code=400, detail="No unprocessed episodes found")
+
+    job = DigestJob(
+        status="pending",
+        triggered_by="manual",
+        episode_ids=json.dumps([ep.id for ep in unprocessed]),
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    # Launch pipeline as background task with its own session (closed inside run_pipeline)
+    pipeline_db = SessionLocal()
+    asyncio.create_task(run_pipeline(job.id, pipeline_db))
+    return {"job_id": job.id}
 
 @app.get("/digest/jobs")
 def list_jobs(db: Session = Depends(get_db)):
@@ -184,14 +211,30 @@ def get_job(job_id: int, db: Session = Depends(get_db)):
     return _job_to_dict(j)
 
 
-# ── SSE stream (stub — filled in Task 9) ─────────────────────────────────────
+# ── SSE stream ────────────────────────────────────────────────────────────────
 
 @app.get("/digest/jobs/{job_id}/stream")
-async def stream_job_stub(job_id: int):
-    from fastapi.responses import StreamingResponse
-    async def empty():
-        yield ": stub\n\n"
-    return StreamingResponse(empty(), media_type="text/event-stream")
+async def stream_job(job_id: int, db: Session = Depends(get_db)):
+    job = db.query(DigestJob).filter_by(id=job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    queue = subscribe_to_job(job_id)
+
+    async def event_generator():
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=30)
+                    yield f"data: {json.dumps(event)}\n\n"
+                    if event.get("step") in ("done", "failed"):
+                        break
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            unsubscribe_from_job(job_id, queue)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 # ── Private RSS feed (calls feed.py — implemented in Task 8) ─────────────────
