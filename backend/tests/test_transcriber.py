@@ -1,5 +1,6 @@
 import pytest
 import os
+from pathlib import Path
 from unittest.mock import patch, MagicMock, mock_open
 from transcriber import split_script_for_tts, transcribe_audio, download_audio
 
@@ -33,7 +34,7 @@ def test_download_audio_saves_file(tmp_path):
     with patch("transcriber.httpx.get", return_value=mock_response):
         path = download_audio("https://example.com/ep.mp3", str(tmp_path))
     assert os.path.exists(path)
-    assert open(path, "rb").read() == b"fake audio data"
+    assert Path(path).read_bytes() == b"fake audio data"
 
 def test_transcribe_audio_small_file(tmp_path):
     """File under 25MB: single Whisper call."""

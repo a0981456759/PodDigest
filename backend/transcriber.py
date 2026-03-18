@@ -33,9 +33,6 @@ def _chunk_audio(file_path: str) -> list[str]:
     audio = AudioSegment.from_file(file_path)
     ten_min_ms = 10 * 60 * 1000
 
-    if len(audio) <= ten_min_ms:
-        return [file_path]
-
     # Try splitting on silence first
     chunks = split_on_silence(audio, min_silence_len=500, silence_thresh=-40, keep_silence=200)
 
