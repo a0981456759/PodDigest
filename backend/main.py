@@ -12,13 +12,20 @@ from dotenv import load_dotenv
 from database import get_db, init_db, SessionLocal, Show, Episode, DigestJob, Digest, UserPreference
 from rss import parse_feed, search_itunes, parse_opml
 from pipeline import run_pipeline, subscribe_to_job, unsubscribe_from_job
+from scheduler import start_scheduler, scheduler
 
 load_dotenv()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    start_scheduler()
     yield
+    try:
+        scheduler.shutdown()
+    except RuntimeError:
+        # Handle scheduler already shut down or event loop closed
+        pass
 
 app = FastAPI(title="Podcast Digest", lifespan=lifespan)
 app.add_middleware(
@@ -140,6 +147,9 @@ def update_preferences(req: PreferenceUpdate, db: Session = Depends(get_db)):
         pref.schedule_hour = req.schedule_hour
     db.commit()
     db.refresh(pref)
+    # Reload scheduler with new settings
+    from scheduler import setup_scheduler
+    setup_scheduler(pref)
     return _pref_to_dict(pref)
 
 
