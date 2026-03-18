@@ -1,10 +1,9 @@
 import os
-import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import (
     create_engine, Column, Integer, String, Text,
-    DateTime, Boolean, ForeignKey, UniqueConstraint
+    DateTime, Boolean, ForeignKey
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from dotenv import load_dotenv
@@ -26,7 +25,7 @@ class Show(Base):
     rss_url = Column(String, unique=True, nullable=False)
     artwork_url = Column(String)
     last_checked = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     episodes = relationship("Episode", back_populates="show", cascade="all, delete-orphan")
 
 
@@ -57,7 +56,7 @@ class DigestJob(Base):
     progress_pct = Column(Integer, default=0)
     current_step = Column(String, nullable=True)
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     digest = relationship("Digest", back_populates="job", uselist=False)
 
 
@@ -70,7 +69,7 @@ class Digest(Base):
     audio_path = Column(String, nullable=True)
     duration_sec = Column(Integer, nullable=True)
     episode_ids = Column(Text, default="[]")  # JSON array, copied from job
-    published_at = Column(DateTime, default=datetime.utcnow)
+    published_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     job = relationship("DigestJob", back_populates="digest")
 
 
@@ -102,5 +101,8 @@ def init_db():
         if not db.query(UserPreference).filter_by(id=1).first():
             db.add(UserPreference(id=1))
             db.commit()
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()

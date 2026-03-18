@@ -1,3 +1,4 @@
+import pytest
 from database import Show, Episode, DigestJob, Digest, UserPreference
 from datetime import datetime
 
@@ -17,14 +18,11 @@ def test_episode_guid_unique(db):
     db.add(ep1)
     db.commit()
     db.add(ep2)
-    import pytest
     with pytest.raises(Exception):
         db.commit()
 
 def test_user_preference_defaults(db):
-    pref = UserPreference()
-    db.add(pref)
-    db.commit()
-    result = db.query(UserPreference).first()
+    result = db.query(UserPreference).filter_by(id=1).first()
+    assert result is not None
     assert result.output_language == "en"
     assert result.schedule_hour == 8
