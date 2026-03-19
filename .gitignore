@@ -1,0 +1,30 @@
+# Environment
+backend/.env
+backend/.env.*
+
+# Database & generated files
+backend/*.db
+backend/*.db-wal
+backend/*.db-shm
+backend/digests/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

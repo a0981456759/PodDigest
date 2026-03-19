@@ -7,13 +7,11 @@ load_dotenv()
 
 
 def _concat_mp3_chunks(chunk_paths: list[str], output_path: str) -> str:
-    """Concatenate MP3 files using pydub."""
-    from pydub import AudioSegment
-    combined = AudioSegment.empty()
-    for path in chunk_paths:
-        combined += AudioSegment.from_mp3(path)
+    """Concatenate MP3 files via binary append (all chunks are same-format TTS output)."""
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    combined.export(output_path, format="mp3")
+    with open(output_path, "wb") as out:
+        for path in chunk_paths:
+            out.write(open(path, "rb").read())
     return output_path
 
 

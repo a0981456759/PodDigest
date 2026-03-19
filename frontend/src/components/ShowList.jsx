@@ -2,7 +2,7 @@ import { useState } from 'react'
 import AddShowModal from './AddShowModal'
 import { deleteShow, getShows } from '../api'
 
-export default function ShowList({ shows, onShowsChange }) {
+export default function ShowList({ shows, onShowsChange, selectedShow, onSelectShow }) {
   const [showModal, setShowModal] = useState(false)
 
   const handleDelete = async (id) => {
@@ -27,14 +27,23 @@ export default function ShowList({ shows, onShowsChange }) {
       </div>
       <ul className="space-y-1 mb-3">
         {shows.map(show => (
-          <li key={show.id} className="flex items-center gap-2 group">
+          <li
+            key={show.id}
+            onClick={() => onSelectShow(show)}
+            className={`flex items-center gap-2 group cursor-pointer rounded px-1 py-0.5 ${selectedShow?.id === show.id ? 'bg-indigo-50' : 'hover:bg-gray-50'}`}
+          >
             {show.artwork_url
               ? <img src={show.artwork_url} className="w-7 h-7 rounded" alt="" />
               : <span className="w-7 h-7 bg-indigo-100 rounded flex items-center justify-center text-xs">🎵</span>
             }
-            <span className="flex-1 text-sm truncate">{show.title}</span>
+            <span className={`flex-1 text-sm truncate ${selectedShow?.id === show.id ? 'text-indigo-700 font-medium' : ''}`}>{show.title}</span>
+            {show.unprocessed_count > 0 && (
+              <span className="text-xs bg-indigo-600 text-white rounded-full px-1.5 py-0.5 min-w-[18px] text-center leading-none">
+                {show.unprocessed_count}
+              </span>
+            )}
             <button
-              onClick={() => handleDelete(show.id)}
+              onClick={(e) => { e.stopPropagation(); handleDelete(show.id) }}
               className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 text-xs"
             >×</button>
           </li>

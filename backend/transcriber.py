@@ -10,55 +10,51 @@ load_dotenv()
 WHISPER_SIZE_LIMIT = 25 * 1024 * 1024  # 25 MB
 
 
-def download_audio(url: str, storage_dir: str) -> str:
-    """Download audio file to storage_dir. Returns local path."""
+def download_audio(url: str, storage_dir: str, progress_callback=None) -> str:
+    """Download audio file to storage_dir with optional progress callback(downloaded, total)."""
     os.makedirs(storage_dir, exist_ok=True)
     filename = url.split("/")[-1].split("?")[0] or "episode.mp3"
+    if not filename.endswith('.mp3'):
+        filename += '.mp3'
     local_path = os.path.join(storage_dir, filename)
-    response = httpx.get(url, follow_redirects=True, timeout=120)
-    response.raise_for_status()
-    with open(local_path, "wb") as f:
-        f.write(response.content)
+    with httpx.stream("GET", url, follow_redirects=True, timeout=300) as response:
+        response.raise_for_status()
+        total = int(response.headers.get("content-length", 0))
+        downloaded = 0
+        with open(local_path, "wb") as f:
+            for chunk in response.iter_bytes(chunk_size=65536):
+                f.write(chunk)
+                downloaded += len(chunk)
+                if progress_callback:
+                    progress_callback(downloaded, total)
     return local_path
 
 
 def _chunk_audio(file_path: str) -> list[str]:
-    """Split audio file into ≤10min chunks. Returns list of chunk paths."""
-    try:
-        from pydub import AudioSegment
-        from pydub.silence import split_on_silence
-    except ImportError:
-        raise RuntimeError("pydub not installed")
+    """Split audio into ≤10min chunks using ffmpeg. Returns list of chunk paths."""
+    import subprocess
+    import shutil
 
-    audio = AudioSegment.from_file(file_path)
-    ten_min_ms = 10 * 60 * 1000
-
-    # Try splitting on silence first
-    chunks = split_on_silence(audio, min_silence_len=500, silence_thresh=-40, keep_silence=200)
-
-    # Merge small chunks into ≤10min segments
-    merged = []
-    current = AudioSegment.empty()
-    for chunk in chunks:
-        if len(current) + len(chunk) > ten_min_ms:
-            merged.append(current)
-            current = chunk
-        else:
-            current += chunk
-    if len(current) > 0:
-        merged.append(current)
-
-    if not merged:
-        # Fallback: force-split at exactly 10 min
-        merged = [audio[i:i + ten_min_ms] for i in range(0, len(audio), ten_min_ms)]
-
+    ffmpeg = shutil.which("ffmpeg") or r"C:\Users\Howard\anaconda3\envs\ML\Library\bin\ffmpeg.exe"
     base = os.path.splitext(file_path)[0]
+    pattern = base + "_chunk%03d.mp3"
+
+    subprocess.run(
+        [ffmpeg, "-y", "-i", file_path, "-f", "segment", "-segment_time", "600",
+         "-c", "copy", pattern],
+        check=True, capture_output=True
+    )
+
+    # Collect generated chunks in order
+    i = 0
     paths = []
-    for i, seg in enumerate(merged):
-        path = f"{base}_chunk{i}.mp3"
-        seg.export(path, format="mp3", bitrate="64k")
-        paths.append(path)
-    return paths
+    while True:
+        p = base + f"_chunk{i:03d}.mp3"
+        if not os.path.exists(p):
+            break
+        paths.append(p)
+        i += 1
+    return paths if paths else [file_path]
 
 
 def transcribe_audio(file_path: str) -> str:

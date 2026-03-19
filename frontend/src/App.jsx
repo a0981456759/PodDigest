@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import ShowList from './components/ShowList'
+import EpisodeList from './components/EpisodeList'
 import DigestPlayer from './components/DigestPlayer'
 import DigestHistory from './components/DigestHistory'
 import JobProgress from './components/JobProgress'
@@ -13,6 +14,8 @@ export default function App() {
   const [prefs, setPrefs] = useState(null)
   const [activeJob, setActiveJob] = useState(null)
   const [error, setError] = useState(null)
+  const [selectedShow, setSelectedShow] = useState(null)
+  const [selectedEpisodeIds, setSelectedEpisodeIds] = useState([])
 
   useEffect(() => {
     getShows().then(setShows)
@@ -20,16 +23,26 @@ export default function App() {
     getPreferences().then(setPrefs)
   }, [])
 
+  const handleSelectShow = (show) => {
+    if (selectedShow?.id === show.id) {
+      setSelectedShow(null)
+    } else {
+      setSelectedShow(show)
+    }
+  }
+
   const handleTrigger = async () => {
     try {
-      const { job_id } = await triggerDigest()
+      const ids = selectedEpisodeIds.length > 0 ? selectedEpisodeIds : null
+      const { job_id } = await triggerDigest(ids)
       setActiveJob(job_id)
+      setError(null)
     } catch (e) {
       setError(e.message)
     }
   }
 
-  const handleJobDone = (digest_id) => {
+  const handleJobDone = () => {
     setActiveJob(null)
     getDigests().then(setDigests)
   }
@@ -45,12 +58,18 @@ export default function App() {
               Language: {prefs.output_language.toUpperCase()}
             </span>
           )}
+          {selectedEpisodeIds.length > 0 && (
+            <span className="text-sm text-indigo-600 flex items-center gap-1">
+              {selectedEpisodeIds.length} 集已選
+              <button onClick={() => setSelectedEpisodeIds([])} className="text-gray-400 hover:text-gray-600 ml-1">×</button>
+            </span>
+          )}
           <button
             onClick={handleTrigger}
             disabled={!!activeJob}
             className="px-4 py-1.5 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
           >
-            {activeJob ? 'Processing...' : '▶ Generate Digest'}
+            {activeJob ? 'Processing...' : selectedEpisodeIds.length > 0 ? '▶ Generate from Selected' : '▶ Generate Digest'}
           </button>
         </div>
       </header>
@@ -64,7 +83,12 @@ export default function App() {
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
         <aside className="w-64 bg-white border-r flex flex-col overflow-y-auto">
-          <ShowList shows={shows} onShowsChange={setShows} />
+          <ShowList
+            shows={shows}
+            onShowsChange={setShows}
+            selectedShow={selectedShow}
+            onSelectShow={handleSelectShow}
+          />
           {prefs && (
             <>
               <InterestSettings prefs={prefs} onPrefsChange={setPrefs} />
@@ -73,9 +97,24 @@ export default function App() {
           )}
         </aside>
 
+        {/* Episode panel */}
+        {selectedShow && (
+          <div className="w-80 bg-white border-r flex flex-col overflow-hidden">
+            <div className="px-4 py-3 border-b">
+              <h2 className="font-semibold text-sm truncate">{selectedShow.title}</h2>
+              <p className="text-xs text-gray-400 mt-0.5">Click episodes to select for digest</p>
+            </div>
+            <EpisodeList
+              show={selectedShow}
+              selectedIds={selectedEpisodeIds}
+              onSelectionChange={setSelectedEpisodeIds}
+            />
+          </div>
+        )}
+
         {/* Main panel */}
         <main className="flex-1 overflow-y-auto p-6 flex flex-col gap-6">
-          <DigestPlayer digests={digests} prefs={prefs} />
+          <DigestPlayer digests={digests} prefs={prefs} onJobStart={setActiveJob} />
           {activeJob && <JobProgress jobId={activeJob} onDone={handleJobDone} />}
           <DigestHistory digests={digests} />
         </main>

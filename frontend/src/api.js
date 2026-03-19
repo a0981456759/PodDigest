@@ -33,13 +33,22 @@ export async function deleteShow(id) {
   await fetch(`${BASE}/shows/${id}`, { method: 'DELETE' })
 }
 
+export async function getShowEpisodes(showId) {
+  const r = await fetch(`${BASE}/shows/${showId}/episodes`)
+  return r.json()
+}
+
 export async function getDigests() {
   const r = await fetch(`${BASE}/digests`)
   return r.json()
 }
 
-export async function triggerDigest() {
-  const r = await fetch(`${BASE}/digest/trigger`, { method: 'POST' })
+export async function triggerDigest(episodeIds = null) {
+  const body = episodeIds ? { episode_ids: episodeIds } : {}
+  const r = await fetch(`${BASE}/digest/trigger`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  })
   if (!r.ok) throw new Error((await r.json()).detail)
   return r.json()
 }
@@ -66,4 +75,26 @@ export function streamJob(jobId, onEvent) {
   }
   es.onerror = () => es.close()
   return es
+}
+
+export async function getEpisodeTranscript(id) {
+  const r = await fetch(`${BASE}/episodes/${id}/transcript`)
+  return r.json()
+}
+
+export async function reprocessEpisode(id) {
+  const r = await fetch(`${BASE}/episodes/${id}/reprocess`, { method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({}) })
+  if (!r.ok) throw new Error((await r.json()).detail)
+  return r.json()
+}
+
+export async function resynthesizeDigest(id, script = null) {
+  const body = script ? { script } : {}
+  const r = await fetch(`${BASE}/digests/${id}/resynthesize`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  })
+  if (!r.ok) throw new Error((await r.json()).detail)
+  return r.json()
 }

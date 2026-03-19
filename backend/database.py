@@ -2,8 +2,8 @@ import os
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import (
-    create_engine, Column, Integer, String, Text,
-    DateTime, Boolean, ForeignKey
+    create_engine, Column, Integer, String, Text, Float,
+    DateTime, Boolean, ForeignKey, event, text
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from dotenv import load_dotenv
@@ -11,7 +11,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./podcast_digest.db")
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False, "timeout": 30})
+
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.close()
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -41,7 +48,7 @@ class Episode(Base):
     audio_url = Column(String)
     audio_local_path = Column(String, nullable=True)
     transcript = Column(Text, nullable=True)
-    summary = Column(Text, nullable=True)  # JSON string
+    summary = Column(Text, nullable=True)
     transcript_failed = Column(Boolean, default=False)
     processed_at = Column(DateTime, nullable=True)
     show = relationship("Show", back_populates="episodes")
@@ -50,9 +57,10 @@ class Episode(Base):
 class DigestJob(Base):
     __tablename__ = "digest_jobs"
     id = Column(Integer, primary_key=True, index=True)
-    status = Column(String, default="pending")  # pending/running/done/failed
-    triggered_by = Column(String, default="manual")  # manual/schedule
-    episode_ids = Column(Text, default="[]")  # JSON array
+    status = Column(String, default="pending")
+    triggered_by = Column(String, default="manual")
+    episode_ids = Column(Text, default="[]")
+    custom_script = Column(Text, nullable=True)
     progress_pct = Column(Integer, default=0)
     current_step = Column(String, nullable=True)
     error_message = Column(Text, nullable=True)
@@ -68,7 +76,8 @@ class Digest(Base):
     script = Column(Text, nullable=False)
     audio_path = Column(String, nullable=True)
     duration_sec = Column(Integer, nullable=True)
-    episode_ids = Column(Text, default="[]")  # JSON array, copied from job
+    cost_usd = Column(Float, nullable=True)
+    episode_ids = Column(Text, default="[]")
     published_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     job = relationship("DigestJob", back_populates="digest")
 
@@ -76,11 +85,11 @@ class Digest(Base):
 class UserPreference(Base):
     __tablename__ = "user_preferences"
     id = Column(Integer, primary_key=True, default=1)
-    topic_tags = Column(Text, default="[]")  # JSON array
+    topic_tags = Column(Text, default="[]")
     interest_description = Column(Text, default="")
     output_language = Column(String, default="en")
-    schedule_type = Column(String, default="weekly")  # new_episode/weekly/biweekly
-    schedule_day = Column(Integer, default=0)  # 0=Mon
+    schedule_type = Column(String, default="weekly")
+    schedule_day = Column(Integer, default=0)
     schedule_hour = Column(Integer, default=8)
     feed_token = Column(String, default=lambda: str(uuid.uuid4()))
 
@@ -95,6 +104,17 @@ def get_db():
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    # Migrate: add columns that may not exist in older databases
+    with engine.connect() as conn:
+        for stmt in [
+            "ALTER TABLE digests ADD COLUMN cost_usd REAL",
+            "ALTER TABLE digest_jobs ADD COLUMN custom_script TEXT",
+        ]:
+            try:
+                conn.execute(text(stmt))
+                conn.commit()
+            except Exception:
+                pass  # Column already exists
     # Ensure UserPreference row exists
     db = SessionLocal()
     try:

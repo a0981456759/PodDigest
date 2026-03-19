@@ -1,7 +1,9 @@
 import os
 import json
 import asyncio
+
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
@@ -93,7 +95,16 @@ async def import_opml(file: UploadFile = File(...), db: Session = Depends(get_db
 
 @app.get("/shows")
 def list_shows(db: Session = Depends(get_db)):
-    return [_show_to_dict(s) for s in db.query(Show).all()]
+    shows = db.query(Show).all()
+    # Count unprocessed episodes per show in one query
+    from sqlalchemy import func
+    counts = dict(
+        db.query(Episode.show_id, func.count(Episode.id))
+        .filter(Episode.transcript == None, Episode.summary == None, Episode.transcript_failed == False)
+        .group_by(Episode.show_id)
+        .all()
+    )
+    return [_show_to_dict(s, counts.get(s.id, 0)) for s in shows]
 
 @app.delete("/shows/{show_id}", status_code=204)
 def delete_show(show_id: int, db: Session = Depends(get_db)):
@@ -109,6 +120,40 @@ def list_episodes(show_id: int, db: Session = Depends(get_db)):
     if not show:
         raise HTTPException(status_code=404, detail="Show not found")
     return [_episode_to_dict(e) for e in show.episodes]
+
+
+@app.get("/episodes/{episode_id}/transcript")
+def get_episode_transcript(episode_id: int, db: Session = Depends(get_db)):
+    ep = db.query(Episode).filter_by(id=episode_id).first()
+    if not ep:
+        raise HTTPException(status_code=404, detail="Episode not found")
+    return {"transcript": ep.transcript or ""}
+
+class ReprocessRequest(BaseModel):
+    force: bool = False
+
+@app.post("/episodes/{episode_id}/reprocess", status_code=202)
+async def reprocess_episode(episode_id: int, req: ReprocessRequest = ReprocessRequest(), db: Session = Depends(get_db)):
+    ep = db.query(Episode).filter_by(id=episode_id).first()
+    if not ep:
+        raise HTTPException(status_code=404, detail="Episode not found")
+    # Reset episode state
+    ep.transcript = None
+    ep.summary = None
+    ep.transcript_failed = False
+    ep.processed_at = None
+    db.commit()
+    job = DigestJob(
+        status="pending",
+        triggered_by="manual",
+        episode_ids=json.dumps([episode_id]),
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    pipeline_db = SessionLocal()
+    asyncio.create_task(run_pipeline(job.id, pipeline_db))
+    return {"job_id": job.id}
 
 
 # ── Preferences ───────────────────────────────────────────────────────────────
@@ -178,27 +223,54 @@ def get_digest_audio(digest_id: int, db: Session = Depends(get_db)):
     return FileResponse(path, media_type="audio/mpeg")
 
 
+class ResynthesizeRequest(BaseModel):
+    script: str | None = None
+
+@app.post("/digests/{digest_id}/resynthesize", status_code=202)
+async def resynthesize_digest(digest_id: int, req: ResynthesizeRequest = ResynthesizeRequest(), db: Session = Depends(get_db)):
+    d = db.query(Digest).filter_by(id=digest_id).first()
+    if not d:
+        raise HTTPException(status_code=404, detail="Digest not found")
+    script = req.script or d.script
+    job = DigestJob(
+        status="pending",
+        triggered_by="resynthesize",
+        episode_ids=d.episode_ids,
+        custom_script=script,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    pipeline_db = SessionLocal()
+    asyncio.create_task(run_pipeline(job.id, pipeline_db))
+    return {"job_id": job.id}
+
+
 # ── Digest jobs (stubs — filled in Task 9) ───────────────────────────────────
 
+class TriggerRequest(BaseModel):
+    episode_ids: list[int] | None = None
+
 @app.post("/digest/trigger", status_code=202)
-async def trigger_digest(db: Session = Depends(get_db)):
-    pref = db.query(UserPreference).filter_by(id=1).first()
-    # Collect all episodes that still need processing (no transcript OR no summary),
-    # excluding any that have permanently failed transcription.
-    # Note: episodes that already have both transcript AND summary are excluded by
-    # design — they were processed in prior digests. The pipeline will regenerate
-    # a new digest script from cached summaries for any re-trigger.
-    unprocessed = db.query(Episode).filter(
-        Episode.transcript_failed == False,
-        (Episode.transcript == None) | (Episode.summary == None),
-    ).all()
-    if not unprocessed:
-        raise HTTPException(status_code=400, detail="No unprocessed episodes found")
+async def trigger_digest(req: TriggerRequest = TriggerRequest(), db: Session = Depends(get_db)):
+    if req.episode_ids:
+        # Use explicitly selected episodes (any status — pipeline skips already-done steps)
+        episodes = db.query(Episode).filter(Episode.id.in_(req.episode_ids)).all()
+        if not episodes:
+            raise HTTPException(status_code=400, detail="No matching episodes found")
+    else:
+        # Default: all unprocessed episodes
+        episodes = db.query(Episode).filter(
+            Episode.transcript_failed == False,
+            (Episode.transcript == None) | (Episode.summary == None),
+        ).all()
+        if not episodes:
+            raise HTTPException(status_code=400, detail="No unprocessed episodes found")
 
     job = DigestJob(
         status="pending",
         triggered_by="manual",
-        episode_ids=json.dumps([ep.id for ep in unprocessed]),
+        episode_ids=json.dumps([ep.id for ep in episodes]),
     )
     db.add(job)
     db.commit()
@@ -263,11 +335,12 @@ def get_feed(token: str, db: Session = Depends(get_db)):
 
 # ── Serializers ───────────────────────────────────────────────────────────────
 
-def _show_to_dict(show: Show) -> dict:
+def _show_to_dict(show: Show, unprocessed_count: int = 0) -> dict:
     return {
         "id": show.id, "title": show.title, "author": show.author,
         "description": show.description, "rss_url": show.rss_url,
         "artwork_url": show.artwork_url,
+        "unprocessed_count": unprocessed_count,
         "last_checked": show.last_checked.isoformat() if show.last_checked else None,
         "created_at": show.created_at.isoformat() if show.created_at else None,
     }
@@ -309,6 +382,7 @@ def _digest_to_dict(d: Digest) -> dict:
         "id": d.id, "job_id": d.job_id, "title": d.title,
         "script": d.script, "audio_path": d.audio_path,
         "duration_sec": d.duration_sec,
+        "cost_usd": d.cost_usd,
         "episode_ids": json.loads(d.episode_ids or "[]"),
         "published_at": d.published_at.isoformat() if d.published_at else None,
     }
