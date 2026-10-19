@@ -32,10 +32,10 @@ def test_run_pipeline_creates_digest(db):
 
     with patch("pipeline.download_audio", return_value="/tmp/ep1.mp3"), \
          patch("pipeline.transcribe_with_retry", return_value="transcript text"), \
-         patch("pipeline.summarize_episode", return_value={
+         patch("pipeline.summarize_episode", return_value=({
              "relevance_score": 0.9, "key_topics": ["AI"],
-             "highlights": ["Great"], "summary": "Good ep"}), \
-         patch("pipeline.generate_digest_script", return_value="Welcome to your digest..."), \
+             "highlights": ["Great"], "summary": "Good ep"}, 0.0)), \
+         patch("pipeline.generate_digest_script", return_value=("Welcome to your digest...", 0.0)), \
          patch("pipeline.synthesize_script", return_value="/digests/1.mp3"), \
          patch("pipeline.os.path.getsize", return_value=1000), \
          patch("pipeline.os.remove"):
