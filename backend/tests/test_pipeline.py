@@ -3,11 +3,12 @@ import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 from database import Base, Show, Episode, DigestJob, Digest, UserPreference
 
 @pytest.fixture
 def db():
-    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     s = Session()
