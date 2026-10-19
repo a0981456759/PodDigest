@@ -43,7 +43,8 @@ def test_run_pipeline_creates_digest(db):
         asyncio.run(run_pipeline(job_id=1, db=db))
 
     digest = db.query(Digest).first()
-    assert digest is not None
+    job = db.query(DigestJob).filter_by(id=1).first()
+    assert digest is not None, f"Pipeline failed: status={job.status}, error={job.error_message}"
     assert "digest" in digest.title.lower() or len(digest.title) > 0
     job = db.query(DigestJob).filter_by(id=1).first()
     assert job.status == "done"
