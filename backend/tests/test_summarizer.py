@@ -26,9 +26,11 @@ def test_summarize_episode_returns_valid_json():
             interest_description="I care about AI",
             topic_tags=["AI", "tech"]
         )
-    assert result["relevance_score"] == 0.9
-    assert "key_topics" in result
-    assert "summary" in result
+    summary, cost = result
+    assert summary["relevance_score"] == 0.9
+    assert "key_topics" in summary
+    assert "summary" in summary
+    assert isinstance(cost, (int, float)) or hasattr(cost, '__float__')
 
 def test_summarize_episode_handles_json_in_markdown():
     """Claude sometimes wraps JSON in ```json ... ```"""
@@ -36,7 +38,8 @@ def test_summarize_episode_handles_json_in_markdown():
     mock_client = _mock_claude(wrapped)
     with patch("summarizer.anthropic.Anthropic", return_value=mock_client):
         result = summarize_episode(SAMPLE_TRANSCRIPT, "AI interest", [])
-    assert result["relevance_score"] == 0.7
+    summary, cost = result
+    assert summary["relevance_score"] == 0.7
 
 def test_generate_digest_script_returns_string():
     mock_client = _mock_claude("Welcome to your digest. Today we cover AI agents...")
@@ -45,6 +48,6 @@ def test_generate_digest_script_returns_string():
          "summary_data": {"relevance_score": 0.9, "key_topics": ["AI"], "highlights": ["Great insight"], "summary": "AI ep."}}
     ]
     with patch("summarizer.anthropic.Anthropic", return_value=mock_client):
-        script = generate_digest_script(summaries, "en", "I love AI", ["AI"])
+        script, cost = generate_digest_script(summaries, "en", "I love AI", ["AI"])
     assert isinstance(script, str)
     assert len(script) > 0

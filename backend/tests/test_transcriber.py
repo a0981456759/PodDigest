@@ -29,9 +29,12 @@ def test_split_script_no_sentence_splits_at_space():
 
 def test_download_audio_saves_file(tmp_path):
     mock_response = MagicMock()
-    mock_response.content = b"fake audio data"
+    mock_response.headers = {"content-length": "15"}
+    mock_response.iter_bytes.return_value = iter([b"fake audio data"])
     mock_response.raise_for_status = MagicMock()
-    with patch("transcriber.httpx.get", return_value=mock_response):
+    mock_stream = MagicMock()
+    mock_stream.__enter__.return_value = mock_response
+    with patch("transcriber.httpx.stream", return_value=mock_stream):
         path = download_audio("https://example.com/ep.mp3", str(tmp_path))
     assert os.path.exists(path)
     assert Path(path).read_bytes() == b"fake audio data"

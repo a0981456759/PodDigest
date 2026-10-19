@@ -3,11 +3,12 @@ import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 from database import Base, Show, Episode, DigestJob, Digest, UserPreference
 
 @pytest.fixture
 def db():
-    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     s = Session()
@@ -27,23 +28,28 @@ def db():
     yield s
     s.close()
 
-def test_run_pipeline_creates_digest(db):
-    from pipeline import run_pipeline
+def test_run_pipeline_creates_digest(db, tmp_path):
+    from pipeline import _run_pipeline_inner
 
-    with patch("pipeline.download_audio", return_value="/tmp/ep1.mp3"), \
+    def fake_synthesize(script, destination):
+        from pathlib import Path
+        Path(destination).write_bytes(b"offline test audio bytes")
+        return destination
+
+    with patch("pipeline.AUDIO_STORAGE", str(tmp_path)), \
+         patch("pipeline.download_audio", return_value="/tmp/ep1.mp3"), \
          patch("pipeline.transcribe_with_retry", return_value="transcript text"), \
-         patch("pipeline.summarize_episode", return_value={
+         patch("pipeline.summarize_episode", return_value=({
              "relevance_score": 0.9, "key_topics": ["AI"],
-             "highlights": ["Great"], "summary": "Good ep"}), \
-         patch("pipeline.generate_digest_script", return_value="Welcome to your digest..."), \
-         patch("pipeline.synthesize_script", return_value="/digests/1.mp3"), \
-         patch("pipeline.os.path.getsize", return_value=1000), \
-         patch("pipeline.os.remove"):
+             "highlights": ["Great"], "summary": "Good ep"}, 0.0)), \
+         patch("pipeline.generate_digest_script", return_value=("Welcome to your digest...", 0.0)), \
+         patch("pipeline.synthesize_script", side_effect=fake_synthesize):
         import asyncio
-        asyncio.run(run_pipeline(job_id=1, db=db))
+        asyncio.run(_run_pipeline_inner(job_id=1, db=db))
 
     digest = db.query(Digest).first()
-    assert digest is not None
+    job = db.query(DigestJob).filter_by(id=1).first()
+    assert digest is not None, f"Pipeline failed: status={job.status}, error={job.error_message}"
     assert "digest" in digest.title.lower() or len(digest.title) > 0
     job = db.query(DigestJob).filter_by(id=1).first()
     assert job.status == "done"
