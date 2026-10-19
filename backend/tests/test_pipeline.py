@@ -27,18 +27,22 @@ def db():
     yield s
     s.close()
 
-def test_run_pipeline_creates_digest(db):
+def test_run_pipeline_creates_digest(db, tmp_path):
     from pipeline import run_pipeline
 
-    with patch("pipeline.download_audio", return_value="/tmp/ep1.mp3"), \
+    def fake_synthesize(script, destination):
+        from pathlib import Path
+        Path(destination).write_bytes(b"offline test audio bytes")
+        return destination
+
+    with patch("pipeline.AUDIO_STORAGE", str(tmp_path)), \
+         patch("pipeline.download_audio", return_value="/tmp/ep1.mp3"), \
          patch("pipeline.transcribe_with_retry", return_value="transcript text"), \
          patch("pipeline.summarize_episode", return_value=({
              "relevance_score": 0.9, "key_topics": ["AI"],
              "highlights": ["Great"], "summary": "Good ep"}, 0.0)), \
          patch("pipeline.generate_digest_script", return_value=("Welcome to your digest...", 0.0)), \
-         patch("pipeline.synthesize_script", return_value="/digests/1.mp3"), \
-         patch("pipeline.os.path.getsize", return_value=1000), \
-         patch("pipeline.os.remove"):
+         patch("pipeline.synthesize_script", side_effect=fake_synthesize):
         import asyncio
         asyncio.run(run_pipeline(job_id=1, db=db))
 
