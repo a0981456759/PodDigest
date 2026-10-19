@@ -28,7 +28,7 @@ def db():
     s.close()
 
 def test_run_pipeline_creates_digest(db, tmp_path):
-    from pipeline import run_pipeline
+    from pipeline import _run_pipeline_inner
 
     def fake_synthesize(script, destination):
         from pathlib import Path
@@ -44,7 +44,7 @@ def test_run_pipeline_creates_digest(db, tmp_path):
          patch("pipeline.generate_digest_script", return_value=("Welcome to your digest...", 0.0)), \
          patch("pipeline.synthesize_script", side_effect=fake_synthesize):
         import asyncio
-        asyncio.run(run_pipeline(job_id=1, db=db))
+        asyncio.run(_run_pipeline_inner(job_id=1, db=db))
 
     digest = db.query(Digest).first()
     job = db.query(DigestJob).filter_by(id=1).first()
